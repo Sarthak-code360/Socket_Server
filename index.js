@@ -1,6 +1,8 @@
 const express = require('express');
+const { Socket } = require('node:dgram');
 const { createServer } = require('node:http');
 const { join } = require('node:path');
+const { Server } = require('socket.io');
 
 const app = express(); // create express application
 const server = createServer(app); //create http server
@@ -8,9 +10,17 @@ const server = createServer(app); //create http server
 // Attach WebSocket servers to the same HTTP server.
 // Customize low - level HTTP server behavior.
 // Use the HTTP server directly for other protocols or functionality.
+const io = new Server(server);
 
 app.get('/', (req, res) => {
     res.sendFile(join(__dirname, 'index.html'));
+});
+
+io.on('connection', (socket) => {
+    console.log('User connected!');
+    socket.on('chat message', (msg) => {
+        console.log('message: ' + msg);
+    });
 });
 
 server.listen(3000, () => {
