@@ -2,56 +2,65 @@ const express = require('express');
 const { createServer } = require('node:http');
 const { join } = require('node:path');
 const { Server } = require('socket.io');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 
-const app = express(); // Create Express application
-const server = createServer(app); // Create HTTP server
+async function main() {
+    // open the database file
+    const db = await open({
+        filename: 'chat.db',
+        driver: sqlite3.Database
+    });
 
-// Initialize Socket.IO server with connection state recovery enabled
-const io = new Server(server, {
-    connectionStateRecovery: {
-        // Set the timeout duration for recovering connections
-        timeout: 5000, // 5 seconds
-    },
-});
+    // create our 'messages' table (you can ignore the 'client_offset' column for now)
+    await db.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_offset TEXT UNIQUE,
+        content TEXT
+    );
+  `);
 
-// Store previous messages to enable recovery
-const messageHistory = [];
+    const app = express();
+    const server = createServer(app);
+    const io = new Server(server, {
+        connectionStateRecovery: {}
+    });
 
-// Serve the index.html file for the root route
-app.get('/', (req, res) => {
-    res.sendFile(join(__dirname, 'index.html'));
-});
+    app.get('/', (req, res) => {
+        res.sendFile(join(__dirname, 'index.html'));
+    });
 
-// Handle WebSocket connections
-io.on('connection', (socket) => {
-    console.log('User connected!');
+    io.on('connection', async (socket) => {
+        socket.on('chat message', async (msg) => {
+            let result;
+            try {
+                // store the message in the database
+                result = await db.run('INSERT INTO messages (content) VALUES (?)', msg);
+            } catch (e) {
+                // TODO handle the failure
+                return;
+            }
+            // include the offset with the message
+            io.emit('chat message', msg, result.lastID);
+        });
 
-    // Send existing message history to the newly connected client
-    messageHistory.forEach((msg) => socket.emit('chat message', msg));
-
-    // Handle incoming messages
-    socket.on('chat message', (msg) => {
-        console.log('message: ' + msg);
-
-        // Save the message to history for recovery purposes
-        messageHistory.push(msg);
-
-        // Limit message history to 10 messages for performance
-        if (messageHistory.length > 10) {
-            messageHistory.shift();
+        if (!socket.recovered) {
+            try {
+                await db.each('SELECT id, content FROM messages WHERE id > ?',
+                    [socket.handshake.auth.serverOffset || 0],
+                    (_err, row) => {
+                        socket.emit('chat message', row.content, row.id);
+                    });
+            } catch (e) {
+                // TODO handle the failure
+            }
         }
-
-        // Broadcast to all clients
-        io.emit('chat message', msg);
     });
 
-    // Handle client disconnection
-    socket.on('disconnect', (reason) => {
-        console.log(`User disconnected: ${reason}`);
+    server.listen(3000, () => {
+        console.log('server running at http://localhost:3000');
     });
-});
+}
 
-// Start the server
-server.listen(3000, () => {
-    console.log('Server is running on http://localhost:3000');
-});
+main();
